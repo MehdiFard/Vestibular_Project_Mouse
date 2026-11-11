@@ -1,0 +1,128 @@
+# =====================================================================================================================
+# 10 GWAS of the young-mice vestibular traits (VsEP threshold, P2 latency, P1 amplitude, beam test) with FaST-LMM
+# (linear mixed model, leave-one-chromosome-out kinship), without (results/noPCs) and with (results/withPCs) the
+# first N_PCS genotype PCs as covariates.
+# In-house run of the 2023 pipeline (old VestProj/GWAS); checked against the GWAS received from UCLA
+# (../../data/gwas_results, the ones 02/04 use; a copy of the four traits is in input/gwas_ucla_results). Nothing
+# downstream reads these results.
+# Runs inside its folder (analyses/10_gwas/).
+#   snakemake -s analyses/10_gwas/Snakefile --profile profiles/slurm        (from the project root)
+# Layout: input/ (raw inputs: links to the workbook and genotypes in ../../data, copy of the UCLA GWAS),
+#         intermediate/ (per-trait phenotype and genotype files),
+#         results/, figures/, logs/<rule>/
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+RS = f"{CP}/{config['envs']['base']}/bin/Rscript"
+BIN = f"{CP}/{config['envs']['base']}/bin"
+PY = f"{CP}/{config['envs']['gwas']}/bin/python"   # FaST-LMM
+FA = str(ROOT / config["refs"]["genome_fa"])
+# raw inputs, linked in input/ (-> ../../data/phenotype, ../../data/genotype)
+PHENO_XLSX = "input/Young_mice_VsEP_Beam_test_010923_strain_names_fixed_20230110_CP.xlsx"
+GENO_TPED = "input/all_strains_mm10.tped"   # one column per strain, header = strain names
+TRAITS = ["threshold", "latency", "amplitude", "beamtest"]   # workbook sheets 1-4
+MODELS = ["noPCs", "withPCs"]
+UCLA = ["Young_VsEP_threshold.gwas", "Young_VsEP_P2_latency.gwas", "Young_VsEP_P1_Amplitude.rsID.gwas",
+        "Young_beamtest.gwas"]   # received GWAS of the same four traits, copied once to input/gwas_ucla_results/
+N_PCS = 5   # genotype PCs as covariates in withPCs (scree plots: figures/pca/<trait>_scree.jpeg)
+PHEN, GENO, PCA = "intermediate/phenotype", "intermediate/genotype", "intermediate/genotype_pca"
+wildcard_constraints: t="|".join(TRAITS), m="|".join(MODELS)
+
+
+rule all:
+    input:
+        expand("figures/pca/{t}_{p}.jpeg", t=TRAITS, p=["scree", "PC1_PC2"]),
+        expand("figures/{m}/{t}.{p}.jpeg", m=MODELS, t=TRAITS, p=["manhattan", "QQ"]),
+        "results/compare_with_received.tsv"
+
+
+rule phenotypes:
+    # one PLINK-style phenotype file per trait (FID = strain, IID = <strain>_<n>)
+    input: ancient(PHENO_XLSX)   # raw input
+    output: expand(f"{PHEN}/{{t}}.phen", t=TRAITS)
+    log: "logs/phenotypes/phenotypes.log"
+    shell: "{RS} scripts/01_make_phenotypes.R {input} > {log} 2>&1"
+
+rule genotypes:
+    # strain genotypes repeated for every phenotyped mouse -> tped/tfam; FaST-LMM phenotype file
+    input: phen=f"{PHEN}/{{t}}.phen", tped=ancient(GENO_TPED)
+    output: f"{GENO}/{{t}}.tped", f"{GENO}/{{t}}.tfam", f"{PHEN}/{{t}}.pheno.txt"
+    log: "logs/genotypes/{t}.log"
+    resources: mem_mb=24000
+    shell: "{RS} scripts/02_make_genotypes.R {input.phen} {input.tped} > {log} 2>&1"
+
+rule genotype_qc:
+    # SNPs only, geno 0.1, MAF 0.05, REF/ALT from the genome, no Y; chr X -> 20 (FaST-LMM needs numeric chromosomes)
+    input: f"{GENO}/{{t}}.tped", f"{GENO}/{{t}}.tfam"
+    output: multiext(f"{GENO}/{{t}}_clean_RefAltOk", ".bed", ".bim", ".fam")
+    params: pfx=f"{GENO}/{{t}}"
+    log: "logs/genotype_qc/{t}.log"
+    resources: mem_mb=16000
+    shell:
+        """
+        exec > {log} 2>&1
+        export PATH={BIN}:$PATH
+        plink2 --tfile {params.pfx} --mouse --geno 0.1 --maf 0.05 --sort-vars --snps-only just-acgt --make-pgen \
+            --out {params.pfx}_clean
+        plink2 --pfile {params.pfx}_clean --mouse --fa {FA} --ref-from-fa force --make-bed --not-chr Y \
+            --out {params.pfx}_clean_RefAltOk
+        rm {params.pfx}_clean.pgen {params.pfx}_clean.pvar {params.pfx}_clean.psam
+        awk -v OFS='\\t' '{{gsub("X", "20", $1); print}}' {params.pfx}_clean_RefAltOk.bim > {params.pfx}_bim.tmp
+        mv {params.pfx}_bim.tmp {params.pfx}_clean_RefAltOk.bim
+        """
+
+rule pca:
+    # one mouse per strain, LD-pruned SNPs (window 50 SNPs, step 5, r2 0.5) -> PCA in R; strain scores -> every mouse
+    input: multiext(f"{GENO}/{{t}}_clean_RefAltOk", ".bed", ".bim", ".fam")
+    output: "results/genotype_pca/{t}.eigenvec.tsv", "results/genotype_pca/{t}.variance.tsv",
+            "results/genotype_pca/{t}.covar.pcs", "figures/pca/{t}_scree.jpeg", "figures/pca/{t}_PC1_PC2.jpeg"
+    params: bfile=f"{GENO}/{{t}}_clean_RefAltOk", pfx=f"{PCA}/{{t}}"
+    log: "logs/pca/{t}.log"
+    shell:
+        """
+        exec > {log} 2>&1
+        export PATH={BIN}:$PATH
+        mkdir -p {PCA} results/genotype_pca
+        awk '!seen[$1]++ {{print $1"\t"$2}}' {params.bfile}.fam > {params.pfx}_strains.keep
+        plink2 --bfile {params.bfile} --mouse --keep {params.pfx}_strains.keep --indep-pairwise 50 5 0.5 \
+            --out {params.pfx}_IndepSNPs
+        plink2 --bfile {params.bfile} --mouse --keep {params.pfx}_strains.keep --extract {params.pfx}_IndepSNPs.prune.in \
+            --export A --out {params.pfx}_strains
+        {RS} scripts/03_pca.R {wildcards.t} {N_PCS}
+        """
+
+rule fastlmm:
+    # LOCO FaST-LMM; withPCs adds PC1-N_PCS as covariates
+    input: multiext(f"{GENO}/{{t}}_clean_RefAltOk", ".bed", ".bim", ".fam"),
+           pheno=f"{PHEN}/{{t}}.pheno.txt",
+           covar=lambda w: f"results/genotype_pca/{w.t}.covar.pcs" if w.m == "withPCs" else []
+    output: "results/{m}/{t}.gwas.loco.tsv"
+    log: "logs/fastlmm/{m}_{t}.log"
+    threads: 4
+    resources: mem_mb=16000
+    shell: "{PY} scripts/04_fastlmm.py {wildcards.t} {wildcards.m} > {log} 2>&1"
+
+rule manhattan_qq:
+    # genome-wide line 0.05 / n SNPs, suggestive line 0.05 / (n SNPs / n chromosomes)
+    input: "results/{m}/{t}.gwas.loco.tsv"
+    output: "figures/{m}/{t}.manhattan.jpeg", "figures/{m}/{t}.QQ.jpeg"
+    log: "logs/manhattan_qq/{m}_{t}.log"
+    shell: "{RS} scripts/05_manhattan_qq.R {wildcards.t} {wildcards.m} > {log} 2>&1"
+
+rule compare_with_received:
+    # same SNPs (chr:bp) as the received UCLA GWAS: correlation of -log10 P, inflation, top-hit overlap
+    input: expand("results/{m}/{t}.gwas.loco.tsv", m=MODELS, t=TRAITS), [ancient(f"input/gwas_ucla_results/{f}") for f in UCLA]
+    output: "results/compare_with_received.tsv", "figures/compare_with_received.jpeg"
+    log: "logs/compare_with_received/compare_with_received.log"
+    resources: mem_mb=16000
+    shell: "{RS} scripts/06_compare_with_received.R {N_PCS} > {log} 2>&1"
+
+
+### END

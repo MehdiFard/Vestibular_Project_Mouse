@@ -1,0 +1,170 @@
+# =====================================================================================================================
+# 05 Saccule vs utricle differential expression (DESeq2) on the Pantry kallisto quantifications: sample table, PCA,
+# contrasts A-E (organ within each age, age within each organ, organ x age), figures, the supporting checks
+# (batch correction, biotypes, limma, VST/ntop, pairing, model diagram, master metadata, sex, paired vs unpaired,
+# interaction examples) and the report deck. rebuild_291/: the same analysis on 291 libraries (sensitivity).
+# Runs inside its folder (analyses/05_dge/); scripts/00_config.R holds the shared paths and thresholds.
+#   snakemake -s analyses/05_dge/Snakefile --profile profiles/slurm          (from the project root)
+# Inputs: ../03_pantry/phenotyping (samples, kallisto abundances), ../03_pantry/pheast/input (batches),
+#         ../01_rna_genotype_matching/results/ase_counter_result/rna_to_geno_summary.tsv, src/ (sample metadata),
+#         ../../data/fastq_bulk/bulk_rnaseq_metadata_mouse_b1_to_b4.xlsx (submission workbook).
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+RS = f"{CP}/{config['envs']['base']}/bin/Rscript"
+PY = f"{CP}/{config['envs']['base']}/bin/python"
+RS_ENRICH = f"{CP}/{config['envs']['enrich']}/bin/Rscript"
+KALLISTO = f"{CP}/{config['envs']['pantry']}/bin/kallisto"
+GROUPS = config["groups"]
+D, T, F = "data", "results/tables", "results/figures"
+RB = "rebuild_291"
+THREADS1 = "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1"
+
+
+rule all:
+    input:
+        "report/saccule_vs_utricle_report.pptx",
+        f"{RB}/report/rebuild_291_report.pptx"
+
+
+# ---------------------------------------------------------------- 260-library analysis
+rule build_inputs:
+    # sample table (organ, age, batch, strain, sex), tximport gene counts, gene annotation, tx2gene
+    input: expand("../03_pantry/phenotyping/input/{g}/{g}.samples.txt", g=GROUPS),
+           expand("../03_pantry/pheast/input/{g}/{g}.batches.tsv", g=GROUPS),
+           "../01_rna_genotype_matching/results/ase_counter_result/rna_to_geno_summary.tsv",
+           "src/metadata_mouse_all_plates_with_matched_geno_ids.csv"
+    output: f"{D}/sample_table.tsv", f"{D}/txi_gene.rds", f"{D}/gene_annotation.tsv", f"{D}/tx2gene.tsv"
+    resources: mem_mb=32000
+    shell: "{RS} scripts/01_build_inputs.R"
+
+rule pca:
+    input: f"{D}/sample_table.tsv", f"{D}/txi_gene.rds"
+    output: f"{D}/dds_all_samples.rds", f"{T}/pca_scores.tsv", f"{F}/01_pca_pc1_pc2_organ_age.png"
+    resources: mem_mb=32000
+    shell: "{RS} scripts/02_pca.R"
+
+rule differential_expression:
+    # paired model carries ~70 strain coefficients: compute node (the login-node reaper kills it)
+    input: f"{D}/sample_table.tsv", f"{D}/txi_gene.rds"
+    output: f"{D}/de_results.rds", f"{D}/dds_interaction.rds", f"{T}/DE_summary.tsv"
+    threads: 16
+    resources: mem_mb=64000, runtime="12h"
+    shell: "{RS} scripts/03_differential_expression.R"
+
+rule figures:
+    input: f"{D}/de_results.rds", f"{D}/dds_interaction.rds", f"{T}/DE_summary.tsv"
+    output: f"{F}/15_significant_gene_counts.png", f"{F}/18_shared_vs_specific.png"
+    resources: mem_mb=16000
+    shell: "{RS} scripts/04_figures.R"
+
+# supporting checks: script -> (one output it writes, the files of data/ it reads)
+_C = [f"{D}/sample_table.tsv", f"{D}/txi_gene.rds", f"{D}/gene_annotation.tsv"]
+CHECKS = {"06_batch_correction_check": (f"{T}/batch_correction_comparison.tsv", _C),
+          "07_biotype_separation_check": (f"{T}/biotype_separation_comparison.tsv", _C),
+          "08_limma_crosscheck": (f"{T}/limma_vs_deseq2_summary.tsv", _C + [f"{D}/de_results.rds"]),
+          "09_vst_and_ntop_check": (f"{T}/pca_ntop_sensitivity.tsv", [f"{D}/sample_table.tsv", f"{D}/dds_all_samples.rds"]),
+          "10_pairing_and_paired_age": (f"{T}/paired_age_vs_batch_adjusted.tsv", _C + [f"{D}/de_results.rds", f"{D}/dds_interaction.rds"]),
+          "11_model_diagram": (f"{F}/29_model_diagram.png", []),
+          "14_sex_effect": (f"{T}/sex_effect_summary.tsv", _C + [f"{D}/de_results.rds"]),
+          "15_paired_vs_unpaired_check": (f"{T}/paired_vs_unpaired_summary.tsv", _C),
+          "16_interaction_illustration": (f"{T}/interaction_examples.tsv",
+                                          [f"{D}/gene_annotation.tsv", f"{D}/de_results.rds", f"{D}/dds_interaction.rds"])}
+
+for _name, (_out, _in) in CHECKS.items():
+    rule:
+        name: f"check_{_name[3:]}"
+        input: _in
+        output: _out
+        threads: 16 if _name.startswith("15") else 1
+        resources: mem_mb=64000 if _name.startswith("15") else 32000, runtime="4h"
+        params: script=f"scripts/{_name}.R"
+        shell: "{RS} {params.script}"
+
+rule master_metadata:
+    # one row per library: sample table + genotype match + submission metadata + QC + PCs
+    input: f"{D}/sample_table.tsv", f"{T}/pca_scores.tsv", f"{D}/txi_gene.rds",
+           "../01_rna_genotype_matching/results/ase_counter_result/rna_to_geno_summary.tsv"
+    output: f"{T}/master_metadata.tsv", f"{T}/master_metadata.csv", f"{T}/master_metadata_dictionary.tsv"
+    resources: mem_mb=16000
+    shell: "{RS} scripts/12_build_master_metadata.R"
+
+rule validate_against_submission_sheet:
+    input: f"{T}/master_metadata.tsv", ancient("../../data/fastq_bulk/bulk_rnaseq_metadata_mouse_b1_to_b4.xlsx")
+    output: f"{T}/backup_sheet_validation.tsv", f"{T}/backup_sheet_validation_summary.tsv"
+    shell: "{PY} scripts/17_validate_against_backup_sheet.py"
+
+rule infer_sex:
+    # Xist vs Y-gene expression against the recorded sex
+    input: f"{T}/master_metadata.tsv", f"{T}/backup_sheet_validation.tsv", f"{D}/txi_gene.rds"
+    output: f"{F}/30_sex_inference.png"
+    resources: mem_mb=16000
+    shell: "{RS} scripts/13_infer_sex.R"
+
+rule report:
+    input: rules.figures.output, [o for o, _ in CHECKS.values()], rules.master_metadata.output, rules.infer_sex.output
+    output: "report/saccule_vs_utricle_report.pptx"
+    shell: "{PY} scripts/05_build_report.py"
+
+
+# ---------------------------------------------------------------- rebuild_291: sensitivity re-analysis, 291 libraries
+def quant_jobs():
+    return {l.split("\t")[0]: l.rstrip("\n").split("\t") for l in open(f"{RB}/data/quant_jobs.tsv") if l.strip()}
+
+rule rb_kallisto:
+    # the 31 libraries Pantry never ran: same kallisto index (../03_pantry) and parameters as the phenotyping run
+    input: unpack(lambda w: {"r1": f"{RB}/{quant_jobs()[w.lib][2]}", "r2": f"{RB}/{quant_jobs()[w.lib][3]}"})
+    output: f"{RB}/quant/{{lib}}/abundance.tsv"
+    threads: 8
+    resources: mem_mb=24000, runtime="4h"
+    params: idx=lambda w: f"../03_pantry/phenotyping/intermediate/{quant_jobs()[w.lib][1]}/reference/kallisto.idx"
+    shell: "{KALLISTO} quant --index {params.idx} --output-dir {RB}/quant/{wildcards.lib} --threads {threads} {input.r1} {input.r2}"
+
+rule rb_inputs:
+    input: lambda w: [f"{RB}/quant/{l}/abundance.tsv" for l in quant_jobs()], f"{RB}/data/v2_sample_table_raw.tsv",
+           f"{D}/tx2gene.tsv", f"{D}/gene_annotation.tsv"
+    output: f"{RB}/data/sample_table.tsv", f"{RB}/data/txi_gene.rds"
+    resources: mem_mb=32000
+    shell: "{THREADS1} {RS} {RB}/scripts/01_build_inputs.R"
+
+rule rb_pca:
+    input: rules.rb_inputs.output
+    output: f"{RB}/data/dds_all_samples.rds", f"{RB}/{T}/pca_covariate_r2.tsv"
+    resources: mem_mb=32000
+    shell: "{THREADS1} {RS} {RB}/scripts/02_pca.R"
+
+rule rb_differential_expression:
+    input: rules.rb_inputs.output
+    output: f"{RB}/data/de_results.rds", f"{RB}/{T}/DE_summary.tsv"
+    threads: 16
+    resources: mem_mb=64000, runtime="8h"
+    shell: "{THREADS1} {RS} {RB}/scripts/03_differential_expression.R"
+
+rule rb_compare:
+    # 291 vs 260 libraries
+    input: rules.rb_differential_expression.output, f"{D}/de_results.rds"
+    output: f"{RB}/{T}/v1_vs_v2_concordance.tsv"
+    resources: mem_mb=16000
+    shell: "{THREADS1} {RS} {RB}/scripts/04_figures_and_compare.R"
+
+rule rb_gsea:
+    input: rules.rb_differential_expression.output, "../06_enrichment/gsea/tables/gsea_all_contrasts.tsv.gz"
+    output: f"{RB}/{T}/gsea_all_contrasts.tsv.gz"
+    threads: 8
+    resources: mem_mb=32000
+    shell: "TMPDIR={RB}/logs {THREADS1} {RS_ENRICH} {RB}/scripts/05_gsea.R"
+
+rule rb_report:
+    input: rules.rb_pca.output, rules.rb_compare.output, rules.rb_gsea.output
+    output: f"{RB}/report/rebuild_291_report.pptx"
+    shell: "{PY} {RB}/scripts/06_build_report.py"
+
+
+### END

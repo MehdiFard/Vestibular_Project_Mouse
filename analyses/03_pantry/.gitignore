@@ -1,0 +1,13 @@
+__pycache__
+.snakemake
+.vscode
+phenotyping/input/*
+phenotyping/intermediate/*
+phenotyping/output/*
+phenotyping/scripts/latent-rna
+pheast/input/*
+pheast/intermediate/*
+pheast/output/*
+.DS_Store
+Pantry.egg-info
+build

@@ -1,0 +1,67 @@
+# =====================================================================================================================
+# 06 Pathway enrichment of the DGE contrasts (../05_dge): GSEA (fgsea on the DESeq2 Wald statistic) and
+# over-representation (hypergeometric on FDR < 0.05, |log2FC| > 1 genes), Hallmark / GO / Reactome gene sets.
+# gsea/ and over_rep/ each hold scripts/, tables/, figures/, report/
+# (org.Mm.eg.db, msigdbr) added to the enrich_r env.
+# Runs inside its folder (analyses/06_enrichment/).
+#   snakemake -s analyses/06_enrichment/Snakefile --profile profiles/slurm          (from the project root)
+# Input: ../05_dge/data/de_results.rds.
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+RS = f"{CP}/{config['envs']['enrich']}/bin/Rscript"
+PY = f"{CP}/{config['envs']['base']}/bin/python"
+DE = "../05_dge/data/de_results.rds"
+
+
+rule all:
+    input: "gsea/report/pathway_analysis_report.pptx", "over_rep/report/over_representation_report.pptx"
+
+
+rule gsea:
+    input: DE
+    output: "gsea/tables/gsea_all_contrasts.tsv.gz", "gsea/tables/gsea_objects.rds", "gsea/tables/gsea_summary.tsv"
+    threads: 8
+    resources: mem_mb=32000
+    shell: "cd gsea && TMPDIR=../logs {RS} scripts/01_run_gsea.R"
+
+rule gsea_figures:
+    input: DE, "gsea/tables/gsea_objects.rds"
+    output: "gsea/tables/contrast_nes_correlation.tsv", "gsea/figures/summary/02_hallmark_nes_heatmap.png"
+    resources: mem_mb=16000
+    shell: "cd gsea && {RS} scripts/02_figures.R"
+
+rule gsea_report:
+    input: rules.gsea.output, rules.gsea_figures.output
+    output: "gsea/report/pathway_analysis_report.pptx"
+    shell: "cd gsea && {PY} scripts/03_build_report.py"
+
+rule ora:
+    input: DE
+    output: "over_rep/tables/ora_all_contrasts.tsv.gz", "over_rep/tables/ora_objects.rds",
+            "over_rep/tables/ora_input_gene_counts.tsv"
+    threads: 8
+    resources: mem_mb=32000
+    shell: "cd over_rep && TMPDIR=../logs {RS} scripts/01_run_ora.R"
+
+rule ora_figures:
+    # also compares with the GSEA results
+    input: DE, "over_rep/tables/ora_objects.rds", "gsea/tables/gsea_all_contrasts.tsv.gz"
+    output: "over_rep/tables/ora_vs_gsea_counts.tsv", "over_rep/tables/hallmark_ora_vs_gsea.tsv"
+    resources: mem_mb=16000
+    shell: "cd over_rep && {RS} scripts/02_figures.R"
+
+rule ora_report:
+    input: rules.ora.output, rules.ora_figures.output
+    output: "over_rep/report/over_representation_report.pptx"
+    shell: "cd over_rep && {PY} scripts/03_build_report.py"
+
+
+### END

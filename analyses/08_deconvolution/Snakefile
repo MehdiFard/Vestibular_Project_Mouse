@@ -1,0 +1,73 @@
+# =====================================================================================================================
+# 08 Cell-type deconvolution of the bulk saccule / utricle RNA-seq with the clean snRNA-seq reference (../07_single_cell_rna):
+# bulk TPM per organ, single-cell reference (counts, metadata, markers), three methods (Bisque, MuSiC, ssGSEA marker
+# enrichment), pseudobulk validation, method comparison, report. The ssGSEA enrichment is the interaction covariate
+# of ../09_interaction_qtl_mapping.
+# Runs inside its folder (analyses/08_deconvolution/).
+#   snakemake -s analyses/08_deconvolution/Snakefile --profile profiles/slurm          (from the project root)
+# Inputs: ../03_pantry/phenotyping/output/<group>/unnorm/expression.bed, ../07_single_cell_rna/results/cell_annotation_clean.
+# Rerun October 2026 from ../03_pantry (earlier results came from the superseded plain Pantry run).
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+PY = f"{CP}/{config['envs']['base']}/bin/python"
+RS_SEURAT = f"{CP}/{config['envs']['seurat']}/bin/Rscript"
+RS_DECONV = f"{CP}/{config['envs']['deconv']}/bin/Rscript"
+GROUPS, TISSUES = config["groups"], config["tissues"]
+TAB = "results/tables"
+
+
+rule all:
+    input: "report/deconvolution_report.pptx", "report/Deconvolution_Report.docx"
+
+
+rule bulk_tpm:
+    input: expand("../03_pantry/phenotyping/output/{g}/unnorm/expression.bed", g=GROUPS)
+    output: expand("results/inputs/bulk_tpm_{t}.csv", t=TISSUES)
+    resources: mem_mb=32000
+    shell: "{PY} scripts/01_build_bulk_tpm.py"
+
+rule sc_reference:
+    input: "../07_single_cell_rna/results/cell_annotation_clean/all_integrated_clean.rds"
+    output: "results/inputs/sc_counts.rds", "results/inputs/sc_meta.rds", "results/inputs/sc_markers.rds",
+            "results/inputs/sc_composition.csv"
+    resources: mem_mb=128000
+    shell: "{RS_SEURAT} scripts/02_build_sc_reference.R"
+
+rule deconvolution:
+    input: rules.bulk_tpm.output, rules.sc_reference.output
+    output: expand(f"{TAB}/{{m}}_{{t}}.csv", m=["fractions_bisque", "fractions_music", "enrichment_ssgsea"], t=TISSUES)
+    threads: 16
+    resources: mem_mb=128000, runtime="3h"
+    shell: "{RS_DECONV} scripts/03_run_deconv.R"
+
+rule pseudobulk_check:
+    # deconvolve pseudobulk made from the reference itself: known truth
+    input: rules.sc_reference.output
+    output: f"{TAB}/pseudobulk_validation.csv"
+    resources: mem_mb=64000
+    shell: "{RS_DECONV} scripts/03b_pseudobulk_check.R"
+
+rule compare_methods:
+    input: rules.deconvolution.output, rules.pseudobulk_check.output, "../07_single_cell_rna/scripts/celltype_palette.R"
+    output: f"{TAB}/method_correlation_summary.csv"
+    shell: "{RS_DECONV} scripts/04_validate_compare.R"
+
+rule intro_assets:
+    output: expand("results/intro_assets/intro{i}.png", i=["1_mixture", "2_deconv", "3_interaction"])
+    shell: "{PY} scripts/make_intro_assets.py"
+
+rule report:
+    input: rules.compare_methods.output, rules.intro_assets.output
+    output: "report/deconvolution_report.pptx", "report/Deconvolution_Report.docx"
+    shell: "{PY} scripts/build_deconv_deck.py && {PY} scripts/build_deconv_doc.py"
+
+
+### END

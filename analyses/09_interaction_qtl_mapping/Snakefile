@@ -1,0 +1,113 @@
+# =====================================================================================================================
+# 09 Cell-type interaction eQTL (tensorQTL cis-interaction) of bulk saccule / utricle expression with the ssGSEA
+# cell-type enrichment from ../08_deconvolution as the interaction term:
+#   per group (4 organ x age groups) with Pantry's covariates (full) or genotype PCs only (core);
+#   per organ with both ages pooled (genotype merge, joint expression normalisation, core / full covariates);
+#   comparison with the marginal eQTLs of Pantry, master comparison of the approaches, reports.
+# Runs inside its folder (analyses/09_interaction_qtl_mapping/); the mapping steps need a GPU.
+#   snakemake -s analyses/09_interaction_qtl_mapping/Snakefile --profile profiles/slurm          (from the project root)
+# Inputs: ../03_pantry (expression, covariates, genotypes, cis-eQTLs), ../08_deconvolution/results/tables.
+# Rerun October 2026 from ../03_pantry (earlier results came from the superseded plain Pantry run).
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+PY = f"{CP}/{config['envs']['base']}/bin/python"       # pandas, tensorQTL (GPU), python-pptx, python-docx
+BIN = f"{CP}/{config['envs']['base']}/bin"
+GROUPS, TISSUES = config["groups"], config["tissues"]
+PANTRY = "../03_pantry"
+ENRICH = expand("../08_deconvolution/results/tables/enrichment_ssgsea_{t}.csv", t=TISSUES)
+GPU = dict(slurm_partition=config["slurm"]["gpu_partition"], slurm_account=config["slurm"]["gpu_account"],
+           gres="gpu:1", cpus_per_task=8, mem_mb=96000, runtime="4h")
+SENTINEL = "Hair_cell.cis_qtl_top_assoc.txt.gz"           # one of the per-cell-type outputs
+
+wildcard_constraints:
+    group = r"(saccule|utricle)_w(8|22)",
+    tissue = r"saccule|utricle",
+    covar = r"core|full"
+
+
+rule all:
+    input:
+        "results/ieqtl/ieqtl_mapping_report.pptx", "results/ieqtl/ieQTL_Mapping_Report.docx",
+        "results/ieqtl_pooled/pooled_ieqtl_report.pptx",
+        "results/mapping_report/Mapping_Full_Report.pptx"
+
+
+def pantry_group(g):
+    return [f"{PANTRY}/phenotyping/output/{g}/expression.bed.gz", f"{PANTRY}/pheast/intermediate/{g}/covar/expression.covar.tsv",
+            f"{PANTRY}/pheast/input/{g}/{g}.bed"]
+
+rule ieqtl_group:
+    # per group, Pantry's covariates (genotype PCs + RNA PCs)
+    input: lambda w: pantry_group(w.group), ENRICH
+    output: f"results/ieqtl/{{group}}/{SENTINEL}"
+    resources: **GPU
+    shell: "{PY} scripts/05_interaction_eqtl.py --group {wildcards.group} --celltypes all"
+
+rule ieqtl_group_core:
+    # per group, genotype PCs only
+    input: lambda w: pantry_group(w.group), ENRICH
+    output: f"results/ieqtl_core/{{group}}/{SENTINEL}"
+    resources: **GPU
+    shell: "{PY} scripts/05_interaction_eqtl.py --group {wildcards.group} --covar core --outroot results/ieqtl_core --celltypes all"
+
+rule compare_marginal:
+    # interaction vs marginal eQTL genes (Pantry cis-QTL)
+    input: expand(f"results/ieqtl/{{g}}/{SENTINEL}", g=GROUPS),
+           expand(f"{PANTRY}/pheast/output/{{g}}/qtl/expression.cis_qtl.txt.gz", g=GROUPS)
+    output: "results/ieqtl/ieqtl_vs_eqtl_table.csv", "results/ieqtl/ieGenes_significant.csv"
+    shell: "{PY} scripts/06_ieqtl_vs_eqtl_compare.py"
+
+rule pool_genotypes:
+    input: expand(f"{PANTRY}/pheast/input/{{g}}/{{g}}.bed", g=GROUPS)
+    output: expand("results/pooled_inputs/{t}_pooled.bed", t=TISSUES)
+    shell: "PATH={BIN}:$PATH bash scripts/07a_pool_genotypes.sh"
+
+rule pool_expression:
+    # both ages per organ, normalised together (Pantry's normalize_phenotypes.py), covariates core / full
+    input: rules.pool_genotypes.output, ENRICH,
+           expand(f"{PANTRY}/phenotyping/output/{{g}}/unnorm/expression.bed", g=GROUPS)
+    output: expand("results/pooled_inputs/{t}_expression.bed.gz", t=TISSUES),
+            expand("results/pooled_inputs/{t}_covar_{c}.tsv", t=TISSUES, c=["core", "full"])
+    resources: mem_mb=32000
+    shell: "PATH={BIN}:$PATH {PY} scripts/07b_pool_expression_covar.py"
+
+rule ieqtl_pooled:
+    input: rules.pool_expression.output, ENRICH
+    output: f"results/ieqtl_pooled/{{tissue}}_{{covar}}/{SENTINEL}"
+    resources: **GPU
+    shell: "{PY} scripts/08_interaction_eqtl_pooled.py --tissue {wildcards.tissue} --covar {wildcards.covar} --celltypes all"
+
+rule compare_pooled:
+    input: expand(f"results/ieqtl_pooled/{{t}}_{{c}}/{SENTINEL}", t=TISSUES, c=["core", "full"]),
+           expand(f"results/ieqtl/{{g}}/{SENTINEL}", g=GROUPS)
+    output: "results/ieqtl_pooled/pooled_ieGene_summary.csv", "results/ieqtl_pooled/robust_ieGenes.csv"
+    shell: "{PY} scripts/09_pooled_compare.py"
+
+rule master_compare:
+    # per-group full / core and pooled core / full side by side
+    input: rules.compare_marginal.output, rules.compare_pooled.output,
+           expand(f"results/ieqtl_core/{{g}}/{SENTINEL}", g=GROUPS)
+    output: "results/mapping_report/master_ieGene_counts.csv"
+    shell: "{PY} scripts/10_master_compare.py"
+
+rule reports:
+    input: rules.compare_marginal.output, rules.compare_pooled.output, rules.master_compare.output
+    output: "results/ieqtl/ieqtl_mapping_report.pptx", "results/ieqtl/ieQTL_Mapping_Report.docx",
+            "results/ieqtl_pooled/pooled_ieqtl_report.pptx", "results/ieqtl_pooled/Pooled_ieQTL_Report.docx",
+            "results/mapping_report/Mapping_Full_Report.pptx", "results/mapping_report/Mapping_Full_Report.docx"
+    shell:
+        """
+        {PY} scripts/build_ieqtl_deck.py && {PY} scripts/build_ieqtl_doc.py
+        {PY} scripts/build_pooled_report.py && {PY} scripts/build_mapping_full_report.py
+        """
+
+
+### END

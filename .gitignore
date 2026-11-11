@@ -1,0 +1,73 @@
+# Only code, configs and docs are tracked. Data, references, results, figures and reports stay on the analysis server
+# (no genotype / RNA-seq data or derived results in git). Every ignored folder has a README.md (tracked) describing
+# what belongs there.
+
+# lab-specific settings and the restructure backup
+config/config_lab.yaml
+profiles/slurm_lab/
+run_pipeline_lab.slurm
+README_lab.md
+BACKUP/
+
+# data, references, logs
+data/*
+!data/README.md
+resources/**
+!resources/**/
+!resources/README.md
+logs/*
+!logs/.gitkeep
+
+# analyses: keep Snakefile, scripts/, README, small configs; inputs (src/), results, figures, reports, run folders out
+analyses/*/src/*
+!analyses/*/src/README.md
+analyses/*/input/*
+!analyses/*/input/README.md
+analyses/*/results/*
+!analyses/*/results/README.md
+analyses/*/figures/*
+!analyses/*/figures/README.md
+analyses/*/report/*
+!analyses/*/report/README.md
+analyses/*/intermediate/
+analyses/*/logs/
+analyses/*/data/
+# 03 Pantry layout; upstream clones and figure assets
+analyses/03_pantry/*/input/*
+!analyses/03_pantry/*/input/README.md
+analyses/03_pantry/*/intermediate/
+analyses/03_pantry/*/output/*
+!analyses/03_pantry/*/output/README.md
+analyses/03_pantry/*/logs/
+analyses/03_pantry/*/temp/
+analyses/03_pantry/phenotyping/log.log
+analyses/03_pantry/pantry-paper/
+analyses/03_pantry/figures/
+analyses/03_pantry/pheast/scripts/fusion_twas/gemma
+analyses/03_pantry/pheast/scripts/fusion_twas/gcta_nr_robust
+# 04 TWAS: per-group outputs
+analyses/04_twas/*_w8/
+analyses/04_twas/*_w22/
+# 05 DGE: derived objects and reports (also in rebuild_291/)
+analyses/05_dge/rebuild_291/data/
+analyses/05_dge/rebuild_291/quant/
+analyses/05_dge/rebuild_291/results/
+analyses/05_dge/rebuild_291/report/
+analyses/05_dge/rebuild_291/logs/
+analyses/05_dge/rebuild_291/fastq
+# 06 enrichment: per-method outputs
+analyses/06_enrichment/*/tables/
+analyses/06_enrichment/*/figures/
+analyses/06_enrichment/*/report/
+
+# manuscript: kept out of git until the manuscript is submitted (only the empty folder is tracked)
+manuscript/*
+!manuscript/.gitkeep
+
+# generic
+**/.snakemake/
+**/__pycache__/
+*.pyc
+Rplots.pdf
+.vscode/
+.claude/

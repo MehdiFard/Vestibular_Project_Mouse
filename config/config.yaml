@@ -1,0 +1,79 @@
+# =====================================================================================================================
+# Mouse vestibular project: shared config for analyses/, manuscript/ and the main Snakefile.
+# Paths are relative to the project root unless absolute. Values written as /path/to/... are site-specific: set them
+# here, or put them in config/config_lab.yaml (not in git), which is loaded after this file and overrides it.
+# Pantry keeps its own configs (analyses/03_pantry/{phenotyping,pheast}/config.yml).
+# =====================================================================================================================
+
+# ---- analyses (each has its own Snakefile, scripts/, src/, results/, figures/) -------------------------------------
+dirs:
+  sample_matching: analyses/01_rna_genotype_matching
+  gwas_sumstats:   analyses/02_gwas_sumstats
+  pantry:          analyses/03_pantry           # Pantry phenotyping + pheast (own Pantry layout inside)
+  twas:            analyses/04_twas
+  dge:             analyses/05_dge
+  enrichment:      analyses/06_enrichment
+  scrna:           analyses/07_single_cell_rna
+  deconvolution:   analyses/08_deconvolution
+  ieqtl:           analyses/09_interaction_qtl_mapping
+  gwas:            analyses/10_gwas
+  manuscript:      manuscript
+
+# ---- raw inputs (unchanged, outside the project; linked under data/) -----------------------------------------------
+data:
+  fastq_bulk_raw_dir:  /path/to/rnaseq_fastq/bulk          # batch1-4 + bulk_rnaseq_metadata_mouse_b1_to_b4.xlsx
+  fastq_scrna_raw_dir: /path/to/rnaseq_fastq/single_cell   # batch1 + single_cell_rnaseq_metadata_mouse_b1.xlsx
+  genotype_raw_dir:    /path/to/genotype                   # BXD-panel genotypes
+  gwas_raw_dir:        /path/to/gwas_results               # mouse vestibular GWAS results (received)
+  phenotype_raw_dir:   /path/to/phenotype                  # young-mice VsEP + beam test workbook (10_gwas)
+  fastq_bulk:          data/fastq_bulk                     # link to fastq_bulk_raw_dir
+  fastq_scrna:         data/fastq_scrna                    # link to fastq_scrna_raw_dir
+
+# ---- samples ----------------------------------------------------------------------------------------------------------
+groups: [saccule_w8, saccule_w22, utricle_w8, utricle_w22]  # Pantry datasets: organ x age (8 and 22 weeks)
+tissues: [saccule, utricle]
+scrna:
+  samples: [FTL_1146, FTL_1147, FTL_1148, FTL_1149]       # snRNA-seq libraries (Cell Ranger)
+
+# ---- references and tools --------------------------------------------------------------------------------------------
+refs:                                   # shared references (resources/); analysis-only ones are in analyses/*/src/
+  genome_fa: resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa   # GRCm38, Ensembl 102
+  gtf:       resources/genome/Mus_musculus.GRCm38.102.chr.gtf
+  collapsed_gtf: /path/to/Mus_musculus.GRCm38.102.chr.collapsed.genes.gtf      # GTEx-style gene collapse (01)
+  star_index: /path/to/index_star                     # STAR 2.7.11b index of genome_fa (01)
+  rsem_index: /path/to/index_rsem/rsem_indx_m38       # RSEM index (01)
+
+tools:                                  # executables (on PATH, or full paths)
+  star: STAR                            # 2.7.11b
+  qtltools: QTLtools                    # MBV
+  cellranger: cellranger                # 9.0.1 (analyses/07_single_cell_rna/src/tools)
+
+# ---- conda environments (create them from envs/*.yml; names as below) ------------------------------------------------
+conda_prefix: /path/to/miniforge3/envs
+envs:
+  base:   Env1          # snakemake, python (pandas, python-pptx, python-docx), R (DESeq2, tximport, edgeR, limma),
+                        # plink2, bcftools, samtools, gatk, rsem, tensorQTL
+  pantry: pantry        # Pantry phenotyping
+  pheast: pantry_pheast # Pantry pheast + FUSION; Snakemake 9 + Slurm executor (runs the main workflow)
+  ldsc:   ldsc          # LDSC munge_sumstats (Python 2.7)
+  seurat: seurat_env    # Seurat, SoupX, scDblFinder (07, 08 step 02)
+  deconv: deconv_env    # BisqueRNA, MuSiC, GSVA (08)
+  enrich: enrich_r      # clusterProfiler, fgsea, msigdbr, org.Mm.eg.db (06)
+  gwas:   gwas_fastlmm  # FaST-LMM 0.6.13 (pip; Python 3.11) (10)
+profile: profiles/slurm          # Snakemake profile for nested runs (set the account/partitions in profiles/slurm)
+mamba_sh: /path/to/miniforge3/etc/profile.d/mamba.sh
+# pheast (03) on the GPU node: optional Apptainer image to run it in (empty = run directly in the pantry_pheast env)
+pheast_container: ""
+apptainer: apptainer                 # apptainer executable (used only when pheast_container is set)
+apptainer_bind: /path/to/data        # folder(s) to bind into the container
+slurm:
+  gpu_partition: "<gpu_partition>"   # Slurm partition with GPUs (pheast, ieQTL with tensorQTL)
+  gpu_account:   "<gpu_account>"
+
+# ---- step parameters -------------------------------------------------------------------------------------------------
+pantry:                                     # read by the analyses; Pantry itself is configured in its config.yml
+  modalities: [alt_polyA, alt_TSS, expression, isoforms, RNA_editing, splicing, stability]
+  twas_chroms: 20                           # autosomes 1-19 + X as numbered in the LD reference
+dge:
+  fdr: 0.05
+  lfc: 1

@@ -1,0 +1,198 @@
+# =====================================================================================================================
+# 01 Sample matching: bulk RNA-seq library <-> BXD strain genotype, and the Pantry inputs.
+# STAR -> RSEM (expression PCA, label check) ; MBV (QTLtools) and ASEReadCounter -> RNA-to-genotype similarity
+# -> mixup summary -> genotype subsets per organ/age -> Pantry inputs (FASTQ maps, sample lists, PLINK genotypes).
+# Runs inside its folder (analyses/01_rna_genotype_matching/); the R scripts also set it with setwd().
+#   snakemake -s analyses/01_rna_genotype_matching/Snakefile --profile profiles/slurm        (from the project root)
+# Inputs: ../../data/fastq_bulk/batch1-4 (every bulk FASTQ), ../../data/genotype (BXD genotypes), src/ (library sheets),
+#         STAR / RSEM indexes in config.yaml refs.
+# BAMs (intermediate/bams) are not kept: the 2024-25 ones were left in the old project folder (deletion candidate),
+# so rerunning the per-library steps re-aligns first.
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+RS = f"{CP}/{config['envs']['base']}/bin/Rscript"
+PY = f"{CP}/{config['envs']['base']}/bin/python"
+BIN = f"{CP}/{config['envs']['base']}/bin"            # plink2, bcftools, samtools, gatk, rsem
+T, REF = config["tools"], config["refs"]
+FA = str(ROOT / REF["genome_fa"])
+FQ = "../../data/fastq_bulk"           # batch1-4/<library>_S<n>_L<lane>_R{1,2}_001.fastq.gz
+GROUPS = config["groups"]
+
+# libraries: FASTQ prefixes (FTL_588_S1_L004) from step 01; ASE/MBV ran on the genome BAMs listed in
+# src/bam_aligned_to_genome.list (FTL_752 and FTL_775 left out: failed alignment)
+def fq_prefixes():
+    return [l.strip() for l in open("src/fastqs_all.list") if l.strip()] if Path("src/fastqs_all.list").exists() else []
+def lib_of(prefix): return "_".join(prefix.split("_")[:2])
+def ase_libs():
+    return [Path(l.strip()).name.split("_Aligned")[0] for l in open("src/bam_aligned_to_genome.list") if l.strip()]
+def mbv_name(lib):
+    sam = dict(l.rstrip("\n").split("\t")[:2] for l in open("src/lookup_table.tsv"))[lib]
+    return f"results/mbv_result/Mm_{lib}_{sam.replace('/', '_')}.mbv.bamstat.txt"
+VCF_MBV = "results/genotype/mouse_geno_all_cln_sorted_maf0.05_geno0.05_RefAltOk_fixed.vcf.gz"
+VCF_ASE = "results/genotype/snps_for_mixup_test.vcf.gz"
+PANTRY_IN = [f"results/pantry_inputs/{g}.{x}" for g in GROUPS for x in ("samples.txt", "fastq_map.txt")]
+def star_fastqs(w):
+    p = next(p for p in fq_prefixes() if lib_of(p) == w.lib)
+    r1 = str(next(Path(FQ).glob(f"batch*/{p}_R1_001.fastq.gz")))   # library names are unique across batches
+    return {"r1": r1, "r2": r1.replace("_R1_001.fastq.gz", "_R2_001.fastq.gz")}
+
+wildcard_constraints:
+    lib = r"FTL_\d+",
+    group = r"(saccule|utricle)_w(8|22)"
+
+
+rule all:
+    input:
+        "figures/00.1_geno_pc1_vs_pc2_scatter.jpeg",
+        "figures/02.3_expr_pc1_vs_pc2_DEseq2_normalized_scatter_mislabeled_tagged.jpeg",
+        "results/ase_counter_result/rna_to_geno_summary.tsv",
+        "results/ase_counter_result/mixup_table_forcheck.csv",
+        lambda w: [mbv_name(l) for l in ase_libs()],
+        PANTRY_IN
+
+
+rule metadata_and_genotypes:
+    # FASTQ list, library metadata (4 batches, src/mouse_samples_info.xlsx), library -> strain table, PLINK genotypes
+    input: ancient("../../data/genotype/all_strains_mm10.tped"), ancient("src/mouse_samples_info.xlsx")   # raw inputs
+    output: "src/fastqs_all.list", "src/metadata_mouse_all_batches.tsv", "src/lib_sam_ins_4RG.tsv",
+            "src/metadata_mouse_all_plates_with_matched_geno_ids.tsv", "src/lookup_table.tsv",
+            "results/genotype/mouse_geno_all.tped", "results/genotype/mouse_geno_all.tfam"
+    shell: "cp -n {input[0]} results/genotype/all_strains.tped; {RS} scripts/01_Rscript01_making_fsqlist_metadata_genotype.R"
+
+rule genotype_pca:
+    input: "results/genotype/mouse_geno_all.tped"
+    output: "figures/00.1_geno_pc1_vs_pc2_scatter.jpeg"
+    shell: "PATH={BIN}:$PATH {RS} scripts/01.1_genotype_pca.R"
+
+rule star:
+    # two-pass STAR with read groups from the FASTQ header (scripts/02_job01_mapping.sh, one library per job)
+    input: unpack(star_fastqs)
+    output: temp("intermediate/bams/{lib}_Aligned.sortedByCoord.out.bam"),    # not kept (2.2 TB): removed once
+            temp("intermediate/bams/{lib}_Aligned.toTranscriptome.out.bam")   # RSEM, MBV and ASE are done
+    threads: 14
+    resources: mem_mb=128000, runtime="12h"
+    params: star=T["star"], index=REF["star_index"]
+    shell:
+        r"""
+        H=$(zcat {input.r1} | head -n 1)
+        FC=$(echo $H | awk -F: '{{print $3}}'); LANE=$(echo $H | awk -F: '{{print $4}}'); TILE=$(echo $H | awk -F: '{{print $5}}')
+        SM=$(awk -v l={wildcards.lib} -F'\t' '$1 == l {{print $2}}' src/lib_sam_ins_4RG.tsv)
+        {params.star} --runMode alignReads --runThreadN {threads} --genomeDir {params.index} \
+            --readFilesIn {input.r1} {input.r2} --readFilesCommand zcat --twopassMode Basic \
+            --quantMode TranscriptomeSAM GeneCounts --outSAMstrandField intronMotif \
+            --outSAMattrRGline ID:$FC.$LANE SM:$SM LB:{wildcards.lib} PL:ILLUMINA PU:$FC.$LANE.$TILE \
+            --outSAMtype BAM SortedByCoordinate --outSAMunmapped Within \
+            --outFileNamePrefix intermediate/bams/{wildcards.lib}_
+        """
+
+rule rsem:
+    input: "intermediate/bams/{lib}_Aligned.toTranscriptome.out.bam"
+    output: "results/count_rsem/{lib}.genes.results.gz"
+    threads: 14
+    resources: mem_mb=64000, runtime="12h"
+    params: index=REF["rsem_index"], fai=FA + ".fai"
+    shell:
+        """
+        PATH={BIN}:$PATH rsem-calculate-expression --num-threads {threads} --quiet --no-bam-output --estimate-rspd \
+            --alignments {input} --bam --paired-end --fai {params.fai} {params.index} results/count_rsem/{wildcards.lib}
+        gzip -f results/count_rsem/{wildcards.lib}.genes.results results/count_rsem/{wildcards.lib}.isoforms.results
+        """
+
+rule expression_pca:
+    # RSEM counts -> DESeq2-normalised / TPM PCA; flags libraries whose organ label disagrees with the clustering
+    input: lambda w: [f"results/count_rsem/{lib_of(p)}.genes.results.gz" for p in fq_prefixes()]
+    output: "figures/02.3_expr_pc1_vs_pc2_DEseq2_normalized_scatter_mislabeled_tagged.jpeg"
+    resources: mem_mb=32000
+    shell: "{RS} scripts/04_Rscript02_pca_expr.R"
+
+rule mbv_vcf:
+    # genotypes for MBV and ASE: MAF/missingness filter, REF/ALT from the genome (scripts/MBV.sh), exonic SNPs
+    input: "results/genotype/mouse_geno_all.tped"
+    output: VCF_MBV, VCF_ASE
+    params: pfx="results/genotype/mouse_geno_all_cln_sorted_maf0.05_geno0.05"
+    shell:
+        r"""
+        export PATH={BIN}:$PATH
+        plink2 --tfile results/genotype/mouse_geno_all --mouse --fa {FA} --maf 0.05 --geno 0.05 --nonfounders \
+            --not-chr X Y --chr 1-19 --snps-only 'just-acgt' --sort-vars --make-pgen --out {params.pfx}
+        plink2 --pfile {params.pfx} --fa {FA} --maf 0.05 --ref-from-fa force --recode vcf id-paste=iid \
+            --out {params.pfx}_RefAltOk
+        bgzip -f {params.pfx}_RefAltOk.vcf && tabix -f -p vcf {params.pfx}_RefAltOk.vcf.gz
+        zcat {params.pfx}_RefAltOk.vcf.gz | grep -v "##chrSet=" | bgzip > {output[0]} && tabix -f -p vcf {output[0]}
+        grep -v '^#' {REF[collapsed_gtf]} | awk '$3=="exon"' | cut -f1,4,5 | gzip -c > src/GRCm38_exon_regions.tsv.gz
+        bcftools view {output[0]} --regions-file src/GRCm38_exon_regions.tsv.gz -Ou | bcftools view --min-af 0.05:minor \
+            -i 'F_MISSING<0.1 && N_ALT=1 && TYPE="snp"' -Oz -o {output[1]} && tabix -f -p vcf {output[1]}
+        """
+
+rule mbv:
+    # QTLtools MBV per library (scripts/05_job3_mbv.sh) + its plot (scripts/06_Rscript03_plot_mbv_result.R)
+    input: bam="intermediate/bams/{lib}_Aligned.sortedByCoord.out.bam", vcf=VCF_MBV
+    output: "results/mbv_result/Mm_{lib}_{sam}.mbv.bamstat.txt"
+    threads: 8
+    resources: mem_mb=64000, runtime="12h"
+    params: qtltools=T["qtltools"]
+    shell:
+        """
+        export PATH={BIN}:$PATH
+        samtools index {input.bam}
+        {params.qtltools} mbv --bam {input.bam} --vcf {input.vcf} --filter-mapping-quality 150 \
+            --filter-base-quality 20 --filter-minimal-coverage 10 --out {output}
+        SAM=$(awk -v id={wildcards.lib} '$1 == id {{print $2}}' src/lookup_table.tsv)
+        {RS} scripts/06_Rscript03_plot_mbv_result.R --input {output} --sample_id "$SAM" --library_id {wildcards.lib}
+        """
+
+rule ase:
+    # GATK ASEReadCounter at the exonic SNPs (scripts/07_job4_ASE.sh)
+    input: bam="intermediate/bams/{lib}_Aligned.sortedByCoord.out.bam", vcf=VCF_ASE
+    output: "results/ase_counter_result/{lib}.readcounts.txt"
+    threads: 8
+    resources: mem_mb=64000, runtime="12h"
+    shell: "PATH={BIN}:$PATH gatk ASEReadCounter -R {FA} -I {input.bam} -V {input.vcf} -O {output} --verbosity ERROR"
+
+rule rna_to_geno:
+    # every library against every strain: share of matching alleles (scripts/qc_rna_to_geno_similarity.py)
+    input: vcf=VCF_ASE, counts=lambda w: [f"results/ase_counter_result/{l}.readcounts.txt" for l in ase_libs()]
+    output: matrix="results/ase_counter_result/rna_to_geno_similarity.tsv",
+            summary="results/ase_counter_result/rna_to_geno_summary.tsv"
+    resources: mem_mb=32000
+    shell:
+        """
+        ls -1 results/ase_counter_result/ | grep readcounts | cut -f1 -d"." > src/lib_ids.list
+        {PY} scripts/qc_rna_to_geno_similarity.py {input.vcf} results/ase_counter_result/ src/lib_ids.list \
+            {output.matrix} {output.summary}
+        """
+
+rule mixup_summary:
+    input: "results/ase_counter_result/rna_to_geno_summary.tsv"
+    output: "results/ase_counter_result/mixup_table_forcheck.csv"
+    shell: "{RS} scripts/08_Rscript04_summary_mixup.R"
+
+rule genotype_subsets:
+    # saccule / utricle genotype subsets with library IDs (scripts/09_..., uses get_genotypes_from_tped.R)
+    input: "results/ase_counter_result/mixup_table_forcheck.csv", "results/genotype/mouse_geno_all.tped"
+    output: "results/genotype/saccule_geno_libid.tped", "results/genotype/utricle_geno_libid.tped"
+    shell: "PATH={BIN}:$PATH {RS} scripts/09_Rscript05_subsetting_sac_and_utr_samples_for_qtl_mapping.R"
+
+PANTRY_SCRIPT = {"utricle_w8": "11.1_Rscript06_make_fasta_list_make_geno_utr_w8.R",
+                 "utricle_w22": "11.2_Rscript06_make_fasta_list_make_geno_utr_w22.R",
+                 "saccule_w8": "11.3_Rscript06_make_fasta_list_make_geno_sac_w8.R",
+                 "saccule_w22": "11.4_Rscript06_make_fasta_list_make_geno_sac_w22.R"}
+
+rule pantry_inputs:
+    # libraries with similarity >= 0.9, one per strain: FASTQ map, sample list, batches, PLINK genotypes; the scripts
+    # also copy them into ../03_pantry/{phenotyping,pheast}/input/<group>/
+    input: "results/ase_counter_result/mixup_table_forcheck.csv", "results/genotype/saccule_geno_libid.tped"
+    output: "results/pantry_inputs/{group}.samples.txt", "results/pantry_inputs/{group}.fastq_map.txt"
+    params: script=lambda w: PANTRY_SCRIPT[w.group]
+    shell: "PATH={BIN}:$PATH {RS} scripts/{params.script}"
+
+
+### END

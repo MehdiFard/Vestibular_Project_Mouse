@@ -1,0 +1,233 @@
+# =====================================================================================================================
+# 07 Single-nucleus RNA-seq of saccule and utricle (4 libraries, 10x): FastQC, Cell Ranger, per-sample annotation,
+# integration, per-organ analysis, organ DE (cell level and pseudobulk), and the clean re-run (SoupX ambient RNA +
+# doublet removal) that the deconvolution reference (../08_deconvolution) is built from.
+# Runs inside its folder (analyses/07_single_cell_rna/); scripts read and write results/ (cell_annotation, per_tissue, tissue_DE,
+# pseudobulk_DE, cell_annotation_clean); decks and reports go to report/.
+#   snakemake -s analyses/07_single_cell_rna/Snakefile --profile profiles/slurm          (from the project root)
+# Inputs: data/fastq_scRNA (links to the raw snRNA-seq FASTQs), src/ (Cell Ranger + GRCm39 reference, sample sheet,
+#         annotation references).
+# =====================================================================================================================
+from pathlib import Path
+import os
+import pandas as pd
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+RS = f"{CP}/{config['envs']['seurat']}/bin/Rscript"       # Seurat, SoupX, scDblFinder
+RS_BASE = f"{CP}/{config['envs']['base']}/bin/Rscript"    # edgeR pseudobulk DE
+PY = f"{CP}/{config['envs']['base']}/bin/python"          # python-pptx, python-docx
+CELLRANGER = config["tools"]["cellranger"]
+if not os.path.isabs(CELLRANGER) and "/" in CELLRANGER:
+    CELLRANGER = str(ROOT / CELLRANGER)
+SAMPLES = config["scrna"]["samples"]
+TISSUES = config["tissues"]
+CA, CL, PT = "results/cell_annotation", "results/cell_annotation_clean", "results/per_tissue"
+
+# Load metadata (src/rna_metadata.tsv: library_id, R1, R2; made by scripts/make_metadata.R)
+rna_meta = pd.read_csv("src/rna_metadata.tsv", sep="\t")
+lib_ids = rna_meta["library_id"].tolist()
+# FASTQ basename (without .fastq.gz) -> path, for the FastQC targets
+fname_to_fq = {os.path.basename(p).replace(".fastq.gz", ""): p for p in list(rna_meta["R1"]) + list(rna_meta["R2"])}
+fastqc_html_targets = [f"intermediate/fastqc/{fname}_fastqc.html" for fname in fname_to_fq]
+# library_id -> Cell Ranger sample name (FASTQ sample name)
+sample_names = dict(zip(rna_meta["library_id"], rna_meta["library_id"] + "_snRNAseq"))
+
+
+rule all:
+    input:
+        fastqc_html_targets,
+        expand("intermediate/cell_ranger_output/{lib_id}/outs/metrics_summary.csv", lib_id=lib_ids),
+        f"{CL}/pseudobulk_DE/clean_organ_DE_utricle_vs_saccule.csv",
+        f"{CL}/celltype_recovery_comparison.csv",
+        "results/tissue_DE/DE_utricle_vs_saccule_ALL.csv",
+        "results/pseudobulk_DE/organ_DE_utricle_vs_saccule_edgeR.csv",
+        "report/Vestibular_Project_Report_2026.docx",
+        "report/vestibular_FULL_report.pptx",
+        "report/per_organ_annotation_report.pptx",
+        "report/saccule_vs_utricle_labmeeting.pptx",
+        "report/saccule_vs_utricle_pseudobulk_DE.pptx",
+        f"{CL}/cleaning_report.pptx",
+        f"{CL}/recovered_celltypes.pptx"
+
+
+# ---------------------------------------------------------------- FASTQ, QC, Cell Ranger
+rule symlink_fastq:
+    """Create symbolic links to scRNAs."""
+    output:
+        "data/fastq_scRNA/.symlinks_done"
+    params:
+        src=str(ROOT / config["data"]["fastq_scrna"]) + "/batch1",
+        dest="data/fastq_scRNA/"
+    shell:
+        r"""
+        mkdir -p {params.dest}
+        ln -sf {params.src}/FTL_* {params.dest}
+        touch {output}
+        """
+
+rule copy_metadata:
+    """Copy metadata file to the src directory."""
+    output:
+        "src/single_cell_rnaseq_metadata_mouse_b1.xlsx"
+    params:
+        src=str(ROOT / config["data"]["fastq_scrna"]) + "/single_cell_rnaseq_metadata_mouse_b1.xlsx",
+        dest="src/"
+    shell:
+        r"""
+        cp {params.src} {params.dest}
+        """
+
+rule make_metadata:
+    input: "src/single_cell_rnaseq_metadata_mouse_b1.xlsx", "data/fastq_scRNA/.symlinks_done"
+    output: "src/rna_metadata.tsv"
+    shell: "{RS_BASE} scripts/make_metadata.R"
+
+rule fastqc:
+    input:
+        fq=lambda w: fname_to_fq[w.fname]
+    output:
+        "intermediate/fastqc/{fname}_fastqc.html"
+    params:
+        outdir="intermediate/fastqc"
+    log:
+        "logs/fastqc/{fname}.log"
+    threads: 8
+    shell:
+        r"""
+        mkdir -p {params.outdir} logs/fastqc
+        PATH={CP}/{config[envs][base]}/bin:$PATH fastqc {input.fq} --threads {threads} --outdir {params.outdir} &> {log}
+        """
+
+rule download_cellranger:
+    # the original download links were time-limited; get them again from 10x Genomics if needed
+    output:
+        cell_ranger = "src/tools/cellranger-9.0.1.tar.gz",
+        mouse_ref = "src/refdata-gex-GRCm39-2024-A.tar.gz"
+    shell:
+        """
+        echo "Download cellranger-9.0.1.tar.gz from https://www.10xgenomics.com/support/software/cell-ranger/downloads" >&2
+        wget -O {output.mouse_ref} "https://cf.10xgenomics.com/supp/cell-exp/refdata-gex-GRCm39-2024-A.tar.gz"
+        exit 1
+        """
+
+rule cellranger_count:
+    input:
+        transcriptome = "src/refdata-gex-GRCm39-2024-A",
+        fastqs = "data/fastq_scRNA"
+    output:
+        outs_dir = "intermediate/cell_ranger_output/{lib_id}/outs/metrics_summary.csv"
+    params:
+        outdir = lambda wildcards: f"intermediate/cell_ranger_output/{wildcards.lib_id}",
+        sample = lambda wildcards: sample_names[wildcards.lib_id]
+    threads: 17
+    resources:
+        mem_gb = 128, mem_mb = 131072, runtime = "36h"
+    log:
+        "logs/cellranger/{lib_id}.log"
+    shell:
+        """
+        mkdir -p {params.outdir} logs/cellranger
+        {CELLRANGER} count \
+            --id {wildcards.lib_id} \
+            --output-dir {params.outdir} \
+            --create-bam true \
+            --transcriptome {input.transcriptome} \
+            --fastqs {input.fastqs} \
+            --sample {params.sample} \
+            --include-introns=true \
+            --localcores {threads} \
+            --localmem {resources.mem_gb} \
+            &> {log}
+        """
+
+CR = expand("intermediate/cell_ranger_output/{s}/outs/metrics_summary.csv", s=SAMPLES)
+
+# ---------------------------------------------------------------- annotation (FTL_1147 first, then all samples)
+rule annotate_ftl1147:
+    # marker module scores (scripts/vestibular_markers.R) -> hair-cell subclusters -> label transfer (Burns 2015)
+    input: CR
+    output: f"{CA}/FTL_1147_seurat_annotated_markers.rds", f"{CA}/FTL_1147_seurat_annotated_markers_refined.rds",
+            f"{CA}/FTL_1147_seurat_labeltransfer.rds"
+    resources: mem_mb=64000
+    shell: "{RS} scripts/annot2.R && {RS} scripts/annot_hc_subcluster.R && {RS} scripts/annot3.R"
+
+rule integrate_all:
+    input: CR, rules.annotate_ftl1147.output
+    output: f"{CA}/integrated_all_samples_annotated.rds"
+    resources: mem_mb=128000, runtime="8h"
+    shell: "{RS} scripts/annot4.R"
+
+rule integrate_tissue:
+    input: CR
+    output: f"{PT}/{{tissue}}_integrated_annotated.rds"
+    resources: mem_mb=128000, runtime="8h"
+    shell: "{RS} scripts/annot5_integrate_tissue.R {wildcards.tissue}"
+
+rule tissue_de:
+    input: f"{CA}/integrated_all_samples_annotated.rds"
+    output: "results/tissue_DE/DE_utricle_vs_saccule_ALL.csv"
+    resources: mem_mb=128000, runtime="8h"
+    shell: "{RS} scripts/annot6_tissue_DE.R"
+
+rule pseudobulk:
+    input: f"{CA}/integrated_all_samples_annotated.rds"
+    output: "results/pseudobulk_DE/pseudobulk_data.rds", "results/pseudobulk_DE/organ_DE_utricle_vs_saccule_edgeR.csv"
+    resources: mem_mb=64000, runtime="2h"
+    shell: "{RS} scripts/annot7_pseudobulk_prep.R && {RS_BASE} scripts/annot8_pseudobulk_DE.R"
+
+# ---------------------------------------------------------------- clean re-run: ambient RNA (SoupX) + doublets
+rule clean_qc:
+    input: CR
+    output: expand(f"{CL}/{{s}}_clean.rds", s=SAMPLES), f"{CL}/filtering_stats.csv"
+    resources: mem_mb=128000, runtime="8h"
+    shell: "{RS} scripts/annot9_clean_qc.R"
+
+rule integrate_clean:
+    input: rules.clean_qc.output
+    output: f"{CL}/all_integrated_clean.rds", f"{CL}/saccule_integrated_clean.rds", f"{CL}/utricle_integrated_clean.rds"
+    resources: mem_mb=128000, runtime="8h"
+    shell: "{RS} scripts/annot10_integrate_clean.R && {RS} scripts/recolor_umaps.R && {RS} scripts/recolor_composition.R"
+
+rule compare_clean:
+    # which cell types the cleaning recovered, against the original integrations
+    input: rules.integrate_clean.output, f"{CA}/integrated_all_samples_annotated.rds",
+           expand(f"{PT}/{{t}}_integrated_annotated.rds", t=TISSUES)
+    output: f"{CL}/celltype_recovery_comparison.csv"
+    resources: mem_mb=128000, runtime="8h"
+    shell: "{RS} scripts/annot11_compare_clean.R"
+
+rule clean_pseudobulk:
+    input: f"{CL}/all_integrated_clean.rds"
+    output: f"{CL}/pseudobulk_DE/pseudobulk_data_clean.rds", f"{CL}/pseudobulk_DE/clean_organ_DE_utricle_vs_saccule.csv"
+    resources: mem_mb=64000, runtime="2h"
+    shell: "{RS} scripts/annot12_clean_pseudobulk.R && {RS_BASE} scripts/annot13_clean_pseudobulk_DE.R"
+
+# ---------------------------------------------------------------- decks and reports
+REPORTS = {"report/saccule_vs_utricle_labmeeting.pptx": ("build_tissue_deck.py", ["results/tissue_DE/DE_utricle_vs_saccule_ALL.csv"]),
+           "report/saccule_vs_utricle_pseudobulk_DE.pptx": ("build_pseudobulk_deck.py", rules.pseudobulk.output),
+           "report/per_organ_annotation_report.pptx": ("build_per_organ_deck.py", expand(f"{PT}/{{t}}_integrated_annotated.rds", t=TISSUES)),
+           "report/vestibular_FULL_report.pptx": ("build_full_report.py", rules.pseudobulk.output),
+           f"{CL}/cleaning_report.pptx": ("build_clean_report.py", rules.compare_clean.output),
+           f"{CL}/recovered_celltypes.pptx": ("build_recovery_slide.py", rules.compare_clean.output),
+           # the funder report also reads the Pantry QTL counts (03) and the TWAS hits (04)
+           "report/Vestibular_Project_Report_2026.docx": ("build_project_report.py", rules.clean_pseudobulk.output +
+               expand("../03_pantry/pheast/output/{g}/qtl/{m}.cis_independent_qtl.txt.gz", g=config["groups"],
+                      m=config["pantry"]["modalities"]) +
+               expand("../04_twas/{g}/output/expression/twas_hits.tsv", g=config["groups"]))}
+
+for _out, (_script, _in) in REPORTS.items():
+    rule:
+        name: _script.replace(".py", "")
+        input: _in
+        output: _out
+        params: script=f"scripts/{_script}"
+        shell: "{PY} {params.script}"
+
+
+### END

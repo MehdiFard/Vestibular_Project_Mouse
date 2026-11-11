@@ -1,0 +1,96 @@
+# =====================================================================================================================
+# 03 Pantry: multimodal RNA phenotyping (phenotyping/) and xQTL / heritability / TWAS-weight mapping (pheast/) for the
+# four groups saccule_w8, saccule_w22, utricle_w8, utricle_w22. Seven modalities: alt_polyA, alt_TSS, expression,
+# isoforms, RNA_editing, splicing, stability (+ cross_modality). Pantry's own Snakefiles run inside phenotyping/ and
+# pheast/ (Pantry layout: input/, intermediate/, output/); this file runs the stages in order. See README.md.
+#   snakemake -s analyses/03_pantry/Snakefile --profile profiles/slurm          (from the project root)
+# Inputs: phenotyping/input/<group>/ (FASTQ map, samples) and pheast/input/<group>/ (PLINK genotypes, batches) from
+#         ../01_rna_genotype_matching; pheast/input/{gwas_sumstat,LDREF} from ../02_gwas_sumstats.
+# RNA editing (as in the human project): 0/0 = below the coverage cutoff -> missing (phenotyping/scripts/assemble_bed.py);
+# host-gene expression regressed out before pheast (pheast_inputs; unregressed in pheast/input/<group>/phenotypes_unregressed).
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+GROUPS = config["groups"]
+MODS = config["pantry"]["modalities"]
+PHENO_SMK = f"{CP}/{config['envs']['pantry']}/bin/snakemake"
+PHEAST_BIN = f"{CP}/{config['envs']['pheast']}/bin"
+PROFILE = f"../../../{config['profile']}"
+# pheast in an Apptainer image when config pheast_container is set (site-specific), otherwise directly
+PHEAST_RUN = (f"{config['apptainer']} exec --nv --bind {config['apptainer_bind']} {config['pheast_container']} "
+              if config.get("pheast_container") else "") + "./run_pheast_gpu.sh"
+# extra arguments for pheast's own snakemake, e.g. --config pheast_extra_args="--forcerun twas_compute_weights_batch"
+# (October 2026: recompute every modality's TWAS weights after the FUSION sign fix)
+PHEAST_EXTRA = config.get("pheast_extra_args", "")
+
+wildcard_constraints:
+    group = r"(saccule|utricle)_w(8|22)"
+
+
+rule all:
+    input: expand("pheast/output/{g}/qtl/{m}.cis_independent_qtl.txt.gz", g=GROUPS, m=MODS + ["cross_modality"])
+
+
+rule phenotyping:
+    # Pantry phenotyping for one group (phenotyping/config.yml datasets.<group>)
+    input: "phenotyping/input/{group}/{group}.fastq_map.txt", "phenotyping/input/{group}/{group}.samples.txt"
+    output: expand("phenotyping/output/{{group}}/{m}.bed.gz", m=MODS)
+    shell: "cd phenotyping && {PHENO_SMK} --configfile config.yml --config dataset={wildcards.group} --profile {PROFILE}"
+
+rule cross_modality:
+    input: rules.phenotyping.output
+    output: "phenotyping/output/{group}/cross_modality.bed.gz"
+    shell: "cd phenotyping && bash scripts/combine_modalities_updated_060425.sh --path_to_output output/{wildcards.group} "
+           "alt_polyA alt_TSS expression RNA_editing isoforms splicing stability"   # order as in the reported run
+
+rule pheast_inputs:
+    # phenotypes restricted to the genotyped individuals (pheast/scripts/prepare_phenotypes.py, into phenotypes_new/);
+    # files identical to the current inputs are kept as they are (so pheast does not redo those modalities);
+    # RNA editing: 0/0-fixed values -> phenotypes_unregressed/, host-gene expression regressed out (Li et al. 2022),
+    # cross_modality rebuilt with the regressed editing rows (scripts copied from the human project).
+    # Only the RNA editing and cross_modality files are declared as outputs: Snakemake touches declared outputs after
+    # a cluster job, which would make pheast redo the unchanged modalities (their files are written too, see above).
+    input: rules.phenotyping.output, rules.cross_modality.output, "pheast/input/{group}/{group}.fam"
+    output: expand("pheast/input/{{group}}/{d}/{m}.bed.gz", d=["phenotypes", "phenotypes_unregressed"], m=["RNA_editing", "cross_modality"])
+    shell:
+        """
+        cd pheast
+        g={wildcards.group}; IN=input/$g; export PATH={PHEAST_BIN}:$PATH
+        awk '{{print $2 "\t" $2}}' $IN/$g.fam > $IN/$g.sample_map.txt
+        awk '{{print $2}}' $IN/$g.fam > $IN/$g.individuals.txt
+        rm -rf $IN/phenotypes_new
+        ./scripts/prepare_phenotypes.py --indir ../phenotyping/output/$g --outdir $IN/phenotypes_new/ \
+            --map $IN/$g.sample_map.txt --individuals $IN/$g.individuals.txt
+        mkdir -p $IN/phenotypes $IN/phenotypes_unregressed
+        for f in $IN/phenotypes_new/*; do
+            b=$(basename $f)
+            case $b in
+                RNA_editing.*|cross_modality.*) mv -f $f $IN/phenotypes_unregressed/ ;;
+                *.bed.gz) if cmp -s <(zcat $f) <(zcat $IN/phenotypes/$b 2>/dev/null); then rm $f; else mv -f $f $IN/phenotypes/; fi ;;
+                *) if cmp -s $f $IN/phenotypes/$b; then rm $f; else mv -f $f $IN/phenotypes/; fi ;;
+            esac
+        done
+        rmdir $IN/phenotypes_new
+        python3 scripts/regress_rna_editing_host_expression.py $g
+        python3 -W ignore scripts/build_cross_modality.py $g
+        """
+
+rule pheast:
+    # cis-QTL (tensorQTL), heritability, TWAS weights on one GPU node (pheast/run_pheast_gpu.sh, pantry_pheast env);
+    # 30 CPUs so that the four groups fit on one 128-CPU GPU node together
+    input: rules.pheast_inputs.output, "pheast/input/gwas_sumstat/gwas_metadata.tsv"
+    output: expand("pheast/output/{{group}}/qtl/{m}.cis_independent_qtl.txt.gz", m=MODS + ["cross_modality"])
+    log: "pheast/logs/pheast_{group}.log"
+    resources: slurm_partition=config["slurm"]["gpu_partition"], slurm_account=config["slurm"]["gpu_account"],
+               gres="gpu:1", cpus_per_task=30, mem_mb=256000, runtime="48h"
+    shell: "cd pheast && MAMBA_SH={config[mamba_sh]} {PHEAST_RUN} {wildcards.group} {PHEAST_EXTRA} > ../{log} 2>&1"
+
+
+### END

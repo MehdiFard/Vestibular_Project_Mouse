@@ -1,0 +1,89 @@
+# =====================================================================================================================
+# 02 GWAS summary statistics for TWAS: cleaned mouse GWAS (6 vestibular traits) in LDSC .sumstats format, and the LD
+# reference (BXD genotypes, one PLINK set per chromosome). Both are copied into ../03_pantry/pheast/input/
+# (gwas_sumstat/, LDREF/), where pheast and ../04_twas read them.
+# Runs inside its folder (analyses/02_gwas_sumstats/).
+#   snakemake -s analyses/02_gwas_sumstats/Snakefile --profile profiles/slurm        (from the project root)
+# Inputs: ../../data/gwas_results/*.gwas (received; copied into input/gwas_results/ and read from there),
+#         ../../data/genotype/mouse_genotype_mm10.{tped,tfam} (raw BXD genotypes, read in place).
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+ROOT = HERE.parents[1]
+workdir: str(HERE)
+configfile: str(ROOT / "config" / "config.yaml")
+_LAB = ROOT / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+CP = config["conda_prefix"]
+RS = f"{CP}/{config['envs']['base']}/bin/Rscript"
+BIN = f"{CP}/{config['envs']['base']}/bin"
+LDSC_PY = f"{CP}/{config['envs']['ldsc']}/bin/python"
+FA = str(ROOT / config["refs"]["genome_fa"])
+TRAITS = ["aged_vsep_f", "aged_vsep_m", "Young_beamtest", "Young_VsEP_P1_Amplitude", "Young_VsEP_P2_latency",
+          "Young_VsEP_threshold"]
+CHROMS = range(1, config["pantry"]["twas_chroms"] + 1)
+CHROMS_STR = " ".join(map(str, CHROMS))
+PHEAST_IN = "../03_pantry/pheast/input"
+GENO = "../../data/genotype/mouse_genotype_mm10"   # raw BXD genotypes (= 01 results/genotype/mouse_geno_all, same md5)
+
+
+rule all:
+    input:
+        expand(f"{PHEAST_IN}/gwas_sumstat/{{t}}.sumstats", t=TRAITS),
+        f"{PHEAST_IN}/gwas_sumstat/gwas_metadata.tsv",
+        expand(f"{PHEAST_IN}/LDREF/mouse_mm10_{{c}}.bed", c=CHROMS)
+
+
+rule ld_reference:
+    # BXD genotypes -> pgen (no Y), REF/ALT from the genome, one bed/bim/fam per chromosome
+    input: ancient(GENO + ".tped"), ancient(GENO + ".tfam")   # raw inputs
+    output: expand("results/genotype/LDREF/mouse_mm10_{c}.bed", c=CHROMS),
+            "results/genotype/geno_all_refalt_ok.pvar"
+    resources: mem_mb=16000
+    shell:
+        """
+        export PATH={BIN}:$PATH
+        mkdir -p results/genotype
+        plink2 --tfile {GENO} --mouse --make-pgen --not-chr Y --sort-vars --nonfounders \
+            --out results/genotype/geno_all
+        plink2 --pfile results/genotype/geno_all --fa {FA} --ref-from-fa force --mouse --make-pgen --not-chr Y \
+            --sort-vars --nonfounders --out results/genotype/geno_all_refalt_ok
+        mkdir -p results/genotype/LDREF
+        for chr in {CHROMS_STR}; do
+            plink2 --pfile results/genotype/geno_all_refalt_ok --make-bed --nonfounders --chr $chr \
+                --out results/genotype/LDREF/mouse_mm10_$chr
+        done
+        """
+
+rule clean_gwas:
+    # keep variants in the genotype panel, REF/ALT as in the LD reference; trait table (N) for TWAS
+    input: "results/genotype/geno_all_refalt_ok.pvar"
+    output: expand("results/gwas_results/{t}.gwas.cln", t=TRAITS), "results/gwas_results/gwas_metadata.tsv"
+    shell: "mkdir -p input/gwas_results && cp -n ../../data/gwas_results/*.gwas input/gwas_results/ && {RS} scripts/clean_gwas_to_make_sumstat.R"
+
+rule munge:
+    # LDSC munge_sumstats (bulik/ldsc in src/ldsc, Python 2.7 env)
+    input: "results/gwas_results/{t}.gwas.cln"
+    output: "results/gwas_results/sumstats_format/{t}.sumstats"
+    shell:
+        """
+        {LDSC_PY} src/ldsc/munge_sumstats.py --sumstats {input} --out results/gwas_results/sumstats_format/{wildcards.t} --N 100
+        gunzip -f results/gwas_results/sumstats_format/{wildcards.t}.sumstats.gz
+        """
+
+rule to_pheast:
+    input: sumstats=expand("results/gwas_results/sumstats_format/{t}.sumstats", t=TRAITS),
+           meta="results/gwas_results/gwas_metadata.tsv",
+           ld=expand("results/genotype/LDREF/mouse_mm10_{c}.bed", c=CHROMS)
+    output: expand(f"{PHEAST_IN}/gwas_sumstat/{{t}}.sumstats", t=TRAITS), f"{PHEAST_IN}/gwas_sumstat/gwas_metadata.tsv",
+            expand(f"{PHEAST_IN}/LDREF/mouse_mm10_{{c}}.bed", c=CHROMS)
+    shell:
+        """
+        mkdir -p {PHEAST_IN}/gwas_sumstat {PHEAST_IN}/LDREF
+        cp {input.sumstats} {input.meta} {PHEAST_IN}/gwas_sumstat/
+        cp results/genotype/LDREF/* {PHEAST_IN}/LDREF/
+        """
+
+
+### END

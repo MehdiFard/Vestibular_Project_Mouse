@@ -1,0 +1,26 @@
+# =====================================================================================================================
+# 04 TWAS: FUSION association + coloc of the Pantry pheast weights (../03_pantry/pheast/intermediate/<group>/twas)
+# with the six mouse vestibular GWAS traits (../03_pantry/pheast/input/gwas_sumstat, from 02), per group, modality,
+# trait and chromosome; then one table per group/modality/trait and the hits (P < 5e-8 / 7 modalities).
+# The rules are in run_twas_with_tissue.smk (was pheast/twas_assoc); this file runs them inside analyses/04_twas/.
+#   snakemake -s analyses/04_twas/Snakefile --profile profiles/slurm          (from the project root)
+# Output: <group>/output/<modality>/twas_hits.tsv (+ one table per trait).
+# Fixed October 2026 (README.md): the assembly rules read their own group only (they used to merge all four groups).
+# =====================================================================================================================
+from pathlib import Path
+HERE = Path(workflow.basedir)
+workdir: str(HERE)
+configfile: str(HERE.parents[1] / "config" / "config.yaml")
+_LAB = HERE.parents[1] / "config" / "config_lab.yaml"   # lab-specific settings, not in git (overrides config.yaml)
+if _LAB.exists():
+    configfile: str(_LAB)
+
+include: "run_twas_with_tissue.smk"
+
+# default target (Snakemake does not take it from the included file)
+rule twas_all:
+    default_target: True
+    input: rules.all.input
+
+
+### END
