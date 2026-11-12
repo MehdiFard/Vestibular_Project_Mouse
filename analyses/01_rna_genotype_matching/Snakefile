@@ -21,8 +21,12 @@ CP = config["conda_prefix"]
 RS = f"{CP}/{config['envs']['base']}/bin/Rscript"
 PY = f"{CP}/{config['envs']['base']}/bin/python"
 BIN = f"{CP}/{config['envs']['base']}/bin"            # plink2, bcftools, samtools, gatk, rsem
-T, REF = config["tools"], config["refs"]
-FA = str(ROOT / REF["genome_fa"])
+def at_root(p):   # config paths are from the project root; bare tool names (on PATH) and absolute paths stay as they are
+    p = str(p)
+    return str(ROOT / p) if "/" in p and not p.startswith("/") else p
+T = {k: at_root(v) for k, v in config["tools"].items()}
+REF = {k: at_root(v) for k, v in config["refs"].items()}
+FA = REF["genome_fa"]
 FQ = "../../data/fastq_bulk"           # batch1-4/<library>_S<n>_L<lane>_R{1,2}_001.fastq.gz
 GROUPS = config["groups"]
 

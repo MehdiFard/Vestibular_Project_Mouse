@@ -25,7 +25,7 @@ conda activate Env1
 
 # Defining input/output
 REF="../../resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa"
-INDEX="/path/to/refs/index_star/"
+INDEX="../../resources/index_star/"
 STAR="STAR"
 OUT_DIR="intermediate/bams/"
 mkdir -p ${OUT_DIR}

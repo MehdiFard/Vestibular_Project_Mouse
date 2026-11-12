@@ -48,7 +48,7 @@ conda activate Env1
 
 # Defining input/output
 REF="../../resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa"
-INDEX="/path/to/refs/index_star/"
+INDEX="../../resources/index_star/"
 STAR="STAR"
 OUT_DIR="intermediate/bams/"
 mkdir -p ${OUT_DIR}
@@ -151,7 +151,7 @@ LIBRARY_ID=$(echo "$BAM_FILE" | cut -f3 -d"/" | cut -f1-2 -d"_")
 # Path to Ref and fai index
 REF="../../resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa"
 REF_FAI_INDX="../../resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa.fai"
-INDX_RSEM="/path/to/refs/index_rsem/rsem_indx_m38"
+INDX_RSEM="../../resources/index_rsem/rsem_indx_m38"
 OUT="results/count_rsem/"
 mkdir -p $OUT
 
@@ -182,7 +182,7 @@ sbatch scripts/03_job02_count_rsem.sh
 ### Assemble_expression:
 COUNT_DIR="results/count_rsem/"
 LIBRARIES="src/lib_ids.list"
-ANNOT="/path/to/refs/Mus_musculus.GRCm38.102.chr.collapsed.genes.gtf"
+ANNOT="../../resources/genome/Mus_musculus.GRCm38.102.chr.collapsed.genes.gtf"
 OUT_PREFIX="intermediate/count_table/expr_moues"
 
 # Note 1: Order of inputs is important.
@@ -194,7 +194,7 @@ python3 scripts/assemble_expression_modified.py ${COUNT_DIR} ${LIBRARIES} ${ANNO
 ###---------------- RUN ASE
 # Running bcftools to filter and extract exonic SNPs.
 # Getting the exon regions from GTF
-GTF_GRCm38="/path/to/refs/Mus_musculus.GRCm38.102.chr.collapsed.genes.gtf"
+GTF_GRCm38="../../resources/genome/Mus_musculus.GRCm38.102.chr.collapsed.genes.gtf"
 grep -v '^#' $GTF_GRCm38 | awk '$3=="exon"' | cut -f1,4,5 | gzip -c > src/GRCm38_exon_regions.tsv.gz
 
 bcftools view results/genotype/mouse_geno_all_cln_sorted_maf0.05_geno0.05_RefAltOk_fixed.vcf.gz \

@@ -19,15 +19,13 @@ dirs:
   gwas:            analyses/10_gwas
   manuscript:      manuscript
 
-# ---- raw inputs (unchanged, outside the project; linked under data/) -----------------------------------------------
+# ---- raw inputs (in data/, not in git; see data/README.md) ------------------------------------------------------------
 data:
-  fastq_bulk_raw_dir:  /path/to/rnaseq_fastq/bulk          # batch1-4 + bulk_rnaseq_metadata_mouse_b1_to_b4.xlsx
-  fastq_scrna_raw_dir: /path/to/rnaseq_fastq/single_cell   # batch1 + single_cell_rnaseq_metadata_mouse_b1.xlsx
-  genotype_raw_dir:    /path/to/genotype                   # BXD-panel genotypes
-  gwas_raw_dir:        /path/to/gwas_results               # mouse vestibular GWAS results (received)
-  phenotype_raw_dir:   /path/to/phenotype                  # young-mice VsEP + beam test workbook (10_gwas)
-  fastq_bulk:          data/fastq_bulk                     # link to fastq_bulk_raw_dir
-  fastq_scrna:         data/fastq_scrna                    # link to fastq_scrna_raw_dir
+  fastq_bulk:   data/fastq_bulk     # batch1-4 + bulk_rnaseq_metadata_mouse_b1_to_b4.xlsx; run_info/ (vendor md5, demux)
+  fastq_scrna:  data/fastq_scrna    # batch1 + single_cell_rnaseq_metadata_mouse_b1.xlsx; run_info/
+  genotype:     data/genotype       # BXD-panel genotypes
+  gwas_results: data/gwas_results   # mouse vestibular GWAS results (received)
+  phenotype:    data/phenotype      # young-mice VsEP + beam test workbook (10_gwas)
 
 # ---- samples ----------------------------------------------------------------------------------------------------------
 groups: [saccule_w8, saccule_w22, utricle_w8, utricle_w22]  # Pantry datasets: organ x age (8 and 22 weeks)
@@ -39,9 +37,9 @@ scrna:
 refs:                                   # shared references (resources/); analysis-only ones are in analyses/*/src/
   genome_fa: resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa   # GRCm38, Ensembl 102
   gtf:       resources/genome/Mus_musculus.GRCm38.102.chr.gtf
-  collapsed_gtf: /path/to/Mus_musculus.GRCm38.102.chr.collapsed.genes.gtf      # GTEx-style gene collapse (01)
-  star_index: /path/to/index_star                     # STAR 2.7.11b index of genome_fa (01)
-  rsem_index: /path/to/index_rsem/rsem_indx_m38       # RSEM index (01)
+  collapsed_gtf: resources/genome/Mus_musculus.GRCm38.102.chr.collapsed.genes.gtf   # GTEx-style gene collapse (01)
+  star_index: resources/index_star                    # STAR 2.7.11b index of genome_fa (01)
+  rsem_index: resources/index_rsem/rsem_indx_m38      # RSEM index (01)
 
 tools:                                  # executables (on PATH, or full paths)
   star: STAR                            # 2.7.11b

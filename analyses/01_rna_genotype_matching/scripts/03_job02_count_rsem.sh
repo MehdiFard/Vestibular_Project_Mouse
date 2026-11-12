@@ -30,7 +30,7 @@ LIBRARY_ID=$(echo "$BAM_FILE" | cut -f3 -d"/" | cut -f1-2 -d"_")
 # Path to Ref and fai index
 REF="../../resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa"
 REF_FAI_INDX="../../resources/genome/Mus_musculus.GRCm38.dna_sm.primary_assembly.fa.fai"
-INDX_RSEM="/path/to/refs/index_rsem/rsem_indx_m38"
+INDX_RSEM="../../resources/index_rsem/rsem_indx_m38"
 OUT="results/count_rsem/"
 mkdir -p $OUT
 

@@ -13,7 +13,7 @@ analyses/07_single_cell_rna/
               run_*.sbatch (the original launchers) ; run_script_notes.sh (interactive notes)
   src/        Cell Ranger, refdata-gex-GRCm39-2024-A, sample sheet, rna_metadata.tsv, annot_ref/ (marker references,
               gene biotypes)
-  data/       links to the raw FASTQs (projects_data)
+  data/       links to the raw FASTQs (../../data/fastq_scrna)
   intermediate/  cell_ranger_output/, fastqc/
   results/    cell_annotation/, per_tissue/, tissue_DE/, pseudobulk_DE/, cell_annotation_clean/ (clean objects,
               compositions, recovery table, clean pseudobulk DE), report_assets/
