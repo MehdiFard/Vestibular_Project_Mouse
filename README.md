@@ -1,4 +1,4 @@
-# The genetics of vestibular function in mice, from bulk to single-cell transcriptomes
+# The genetics of functional decline in the aging vestibular system
 
 **Bulk RNA-seq** of the two otolith organs, saccule and utricle, of BXD recombinant inbred mice at 8 and 22 weeks,
 matched to strain genotypes: multimodal xQTL mapping across seven RNA modalities (Pantry), TWAS and colocalization
