@@ -20,7 +20,6 @@ analyses/01_rna_genotype_matching/
 ```
 
 Libraries kept for Pantry: RNA-to-genotype similarity >= 0.9, one library per strain per group
-(scripts 11.1-11.4). The 2024-25 BAMs stayed in the old folder (`vestibulart_project_mouse/data/bams`, 2.2 TB,
-listed for deletion). The early tensorQTL eQTL test (script 10 and helpers) is in `BACKUP/earlier_versions/`.
+(scripts 11.1-11.4). The BAMs are temporary: they are removed once RSEM, MBV and ASE are done.
 
 Run: `snakemake -s analyses/01_rna_genotype_matching/Snakefile --profile profiles/slurm` (from the project root).

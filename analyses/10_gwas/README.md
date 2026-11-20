@@ -3,7 +3,7 @@
 In-house GWAS of four young-mice traits (VsEP threshold, P2 latency, P1 amplitude, beam test; 85-86 inbred strains:
 66 BXD + 19 other inbred strains incl. the BXD parents; 444-544 mice) with FaST-LMM: linear mixed model,
 leave-one-chromosome-out kinship, without (`noPCs`) and with (`withPCs`) the first `N_PCS` genotype PCs as covariates.
-It is the 2023 pipeline (old `VestProj/GWAS`, run by hand; kept in `BACKUP/kept_from_old_folders/`) as a Snakefile.
+It is the 2023 pipeline (run by hand at the time) as a Snakefile.
 The GWAS that 02 and 04 use are the ones received from UCLA (`../../data/gwas_results`; the four traits are copied to
 `input/gwas_ucla_results/`); `compare_with_received` checks ours against them, and nothing downstream reads these results.
 

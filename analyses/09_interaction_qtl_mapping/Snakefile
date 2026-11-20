@@ -7,7 +7,6 @@
 # Runs inside its folder (analyses/09_interaction_qtl_mapping/); the mapping steps need a GPU.
 #   snakemake -s analyses/09_interaction_qtl_mapping/Snakefile --profile profiles/slurm          (from the project root)
 # Inputs: ../03_pantry (expression, covariates, genotypes, cis-eQTLs), ../08_deconvolution/results/tables.
-# Rerun October 2026 from ../03_pantry (earlier results came from the superseded plain Pantry run).
 # =====================================================================================================================
 from pathlib import Path
 HERE = Path(workflow.basedir)

@@ -9,6 +9,9 @@ cell-type-aware (interaction) QTL mapping.
 
 The whole analysis is a set of Snakemake workflows, one per analysis, run in order by the main `Snakefile`.
 
+> Code for a manuscript in preparation. Results, figures and the report-building scripts will be added after
+> publication.
+
 ## Workflow
 
 Each box is one folder in `analyses/` with its own Snakefile.
@@ -50,7 +53,7 @@ analyses/
   08_deconvolution/            bulk deconvolution with the snRNA-seq reference (Bisque, MuSiC, ssGSEA)
   09_interaction_qtl_mapping/  cell-type interaction QTLs (tensorQTL)
   10_gwas/                     GWAS of the young-mice VsEP and beam-test traits (FaST-LMM)
-manuscript/          paper figures, supplementary tables and reports (added after the manuscript is submitted)
+manuscript/          paper figures, supplementary tables and reports (added after publication)
 data/                raw inputs (not in the repository; see data/README.md)
 resources/           shared genome and annotation (not in the repository; see resources/README.md)
 logs/                run logs

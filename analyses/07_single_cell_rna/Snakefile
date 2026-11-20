@@ -215,7 +215,7 @@ REPORTS = {"report/saccule_vs_utricle_labmeeting.pptx": ("build_tissue_deck.py",
            "report/vestibular_FULL_report.pptx": ("build_full_report.py", rules.pseudobulk.output),
            f"{CL}/cleaning_report.pptx": ("build_clean_report.py", rules.compare_clean.output),
            f"{CL}/recovered_celltypes.pptx": ("build_recovery_slide.py", rules.compare_clean.output),
-           # the funder report also reads the Pantry QTL counts (03) and the TWAS hits (04)
+           # the project report also reads the Pantry QTL counts (03) and the TWAS hits (04)
            "report/Vestibular_Project_Report_2026.docx": ("build_project_report.py", rules.clean_pseudobulk.output +
                expand("../03_pantry/pheast/output/{g}/qtl/{m}.cis_independent_qtl.txt.gz", g=config["groups"],
                       m=config["pantry"]["modalities"]) +

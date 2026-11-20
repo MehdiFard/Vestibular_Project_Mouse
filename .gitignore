@@ -63,6 +63,15 @@ analyses/06_enrichment/*/report/
 # manuscript: kept out of git until the manuscript is submitted (only the empty folder is tracked)
 manuscript/*
 !manuscript/.gitkeep
+# also kept out until publication: the detailed READMEs with results (README_full.md, next to each public README.md)
+# and the scripts that build the decks / reports (their text holds the results)
+**/README_full.md
+analyses/05_dge/scripts/05_build_report.py
+analyses/05_dge/rebuild_291/scripts/06_build_report.py
+analyses/06_enrichment/*/scripts/03_build_report.py
+analyses/07_single_cell_rna/scripts/build_*.py
+analyses/08_deconvolution/scripts/build_deconv_*.py
+analyses/09_interaction_qtl_mapping/scripts/build_*.py
 
 # generic
 **/.snakemake/

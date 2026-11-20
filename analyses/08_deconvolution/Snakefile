@@ -6,7 +6,6 @@
 # Runs inside its folder (analyses/08_deconvolution/).
 #   snakemake -s analyses/08_deconvolution/Snakefile --profile profiles/slurm          (from the project root)
 # Inputs: ../03_pantry/phenotyping/output/<group>/unnorm/expression.bed, ../07_single_cell_rna/results/cell_annotation_clean.
-# Rerun October 2026 from ../03_pantry (earlier results came from the superseded plain Pantry run).
 # =====================================================================================================================
 from pathlib import Path
 HERE = Path(workflow.basedir)

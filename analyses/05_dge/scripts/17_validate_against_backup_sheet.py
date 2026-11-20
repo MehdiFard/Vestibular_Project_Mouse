@@ -19,7 +19,7 @@ import pandas as pd
 
 PROJ = Path("../..")
 BASE = PROJ / "analyses" / "05_dge"
-# submission workbook (byte-identical to the /data/rss backup copy, which compute nodes cannot read)
+# submission workbook (byte-identical to the backup-archive copy)
 XLSX = PROJ / "data" / "fastq_bulk" / "bulk_rnaseq_metadata_mouse_b1_to_b4.xlsx"
 T = BASE / "results" / "tables"
 
